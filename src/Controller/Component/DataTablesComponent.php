@@ -3,6 +3,9 @@ namespace DataTables\Controller\Component;
 
 use Cake\Controller\Component;
 use Cake\ORM\TableRegistry;
+use Cake\Log\Log;
+use Psr\Http\Message\ServerRequestInterface;
+
 
 /**
  * DataTables component
@@ -42,51 +45,57 @@ class DataTablesComponent extends Component
     private function _processRequest($param = null)
     {
         // -- check whether it is an ajax call from data tables server-side plugin or a normal request
-        $this->_isAjaxRequest = $this->request->is('ajax');
+        $this->_isAjaxRequest = $this->getController()->getRequest()->is('ajax');
 
         // -- check whether it is an csv request
-        if (isset($this->request->query['_csv_output']) && $this->request->query['_csv_output'] == true) {
+        $csvOutputQuery = $this->getController()->getRequest()->getQuery('_csv_output');
+        if (!empty($csvOutputQuery) && $csvOutputQuery) {
             $this->_applyLimit = false;
         }
 
         if ($this->_applyLimit === true) {
             // -- add limit
-            if (isset($this->request->query['length']) && !empty($this->request->query['length'])) {
-                $this->config('length', $this->request->query['length']);
+            $lengthQuery = $this->getController()->getRequest()->getQuery('length');
+            if (isset($lengthQuery) && !empty($lengthQuery)) {
+                $this->setConfig('length', $this->getController()->getRequest()->getQuery('length'));
             }
 
             // -- add offset
-            if (isset($this->request->query['start']) && !empty($this->request->query['start'])) {
-                $this->config('start', (int)$this->request->query['start']);
+            $start = $this->getController()->getRequest()->getQuery('start');
+            if (isset($start) && !empty($start)) {
+                $this->setConfig('start', (int)$this->getController()->getRequest()->getQuery('start'));
             }
         }
 
         // -- add order
-        if (isset($this->request->query['order']) && !empty($this->request->query['order'])) {
-            $order = $this->config('order');
-            foreach ($this->request->query['order'] as $item) {
-                $order[$this->request->query['columns'][$item['column']]['name']] = $item['dir'];
+        $orderQuery = $this->getController()->getRequest()->getQuery('order');
+        if (isset($orderQuery) && !empty($orderQuery)) {
+            $order = $this->getConfig('order');
+            foreach ($this->getController()->getRequest()->getQuery('order') as $item) {
+                $order[$this->getController()->getRequest()->getQuery('columns')[$item['column']]['name']] = $item['dir'];
             }
-            $this->config('order', $order);
+            $this->setConfig('order', $order);
         }
 
         // -- add draw (an additional field of data tables plugin)
-        if (isset($this->request->query['draw']) && !empty($this->request->query['draw'])) {
-            $this->_viewVars['draw'] = (int)$this->request->query['draw'];
+        $drawQuery = $this->getController()->getRequest()->getQuery('draw');
+        if (isset($drawQuery) && !empty($drawQuery)) {
+            $this->_viewVars['draw'] = (int)$this->getController()->getRequest()->getQuery('draw');
         }
 
         // -- don't support any search if columns data missing
-        if (!isset($this->request->query['columns']) ||
-            empty($this->request->query['columns'])) {
+        $columnsQuery = $this->getController()->getRequest()->getQuery('columns');
+        if (!isset($columnsQuery) ||
+            empty($columnsQuery)) {
             return;
         }
 
         // -- check table search field
-        $globalSearch = (isset($this->request->query['search']['value']) ?
-            $this->request->query['search']['value'] : false);
+        $globalSearch = (isset($this->getController()->getRequest()->getQuery('search')['value']) ?
+            $this->getController()->getRequest()->getQuery('search')['value'] : false);
 
         // -- add conditions for both table-wide and column search fields
-        foreach ($this->request->query['columns'] as $column) {
+        foreach ($this->getController()->getRequest()->getQuery('columns') as $column) {
             if (!empty($column['name'])) {
                 if ($globalSearch && $column['searchable'] == 'true') {
                     $this->_addCondition($column['name'], $globalSearch, 'or', true);
@@ -117,7 +126,7 @@ class DataTablesComponent extends Component
     public function getPaths()
     {
         $parser = [];
-        foreach ($this->request->query['columns'] as $column) {
+        foreach ($this->getController()->getRequest()->getQuery('columns') as $column) {
             if (!empty($column['name']) && !empty($column['data'])) {
                 $parser[] = $column['data'];
             }
@@ -133,7 +142,7 @@ class DataTablesComponent extends Component
     public function getHeader()
     {
         $header = [];
-        foreach ($this->request->query['columns'] as $column) {
+        foreach ($this->getController()->getRequest()->getQuery('columns') as $column) {
             if (!empty($column['name'])) {
                 $column = str_replace('_matchingData.', '', $column['name']);
                 $header[] = $column;
@@ -194,7 +203,7 @@ class DataTablesComponent extends Component
     public function find($tableName, $finder = 'all', array $options = [])
     {
         // -- get table object
-        $table = TableRegistry::get($tableName);
+        $table = TableRegistry::getTableLocator()->get($tableName);
         $data = $table->find($finder, $options);
         return $this->process($data);
     }
@@ -210,13 +219,14 @@ class DataTablesComponent extends Component
     public function process($queryObject, $filterParams = null, $applyLimit = null)
     {
         $this->_setQueryFields($queryObject);
-
         //set table alias name
-        $this->_tableName = $queryObject->repository()->alias();
+        $this->_tableName = $queryObject->getRepository()->getAlias();
 
         if ($filterParams !== null) {
-            $this->request->query['columns'] = $filterParams['columns'];
-            $this->request->query['search'] = $filterParams['search'];
+            $this->request = $this->request->withQueryParams([
+                'columns' => $filterParams['columns'],
+                'search' => $filterParams['search']
+            ]);
             $this->_applyLimit = false;
         }
 
@@ -230,12 +240,13 @@ class DataTablesComponent extends Component
         // -- record count
         $this->_viewVars['recordsTotal'] = $queryObject->count();
 
+
         // -- filter result
-        if (count($this->config('conditionsAnd')) > 0) {
-            $queryObject->where($this->config('conditionsAnd'));
+        if (count($this->getConfig('conditionsAnd')) > 0) {
+            $queryObject->where($this->getConfig('conditionsAnd'));
         }
 
-        foreach ($this->config('matching') as $association => $where) {
+        foreach ($this->getConfig('matching') as $association => $where) {
             /*$associationPath = $this->getKeyPath($queryObject->contain(), $association);
             if ($associationPath !== false) {
                 $queryObject->contain([
@@ -253,21 +264,21 @@ class DataTablesComponent extends Component
             $queryObject->where($where);
         }
 
-        if (count($this->config('conditionsOr')) > 0) {
-            $queryObject->andWhere(['or' => $this->config('conditionsOr')]);
+        if (count($this->getConfig('conditionsOr')) > 0) {
+            $queryObject->andWhere(['or' => $this->getConfig('conditionsOr')]);
         }
 
         //->bufferResults(true) Hack => when we add inner join cond the count will be returned from cache not actual count
-        $this->_viewVars['recordsFiltered'] = $queryObject->bufferResults(true)->count();
+        $this->_viewVars['recordsFiltered'] = $queryObject->enableBufferedResults(true)->count();
 
         if ($this->_applyLimit === true) {
             // -- add limit
-            $queryObject->limit($this->config('length'));
-            $queryObject->offset($this->config('start'));
+            $queryObject->limit($this->getConfig('length'));
+            $queryObject->offset($this->getConfig('start'));
         }
 
         // -- sort
-        $queryObject->order($this->config('order'));
+        $queryObject->order($this->getConfig('order'));
 
         // -- set all view vars to view and serialize array
         $this->_setViewVars();
@@ -282,12 +293,17 @@ class DataTablesComponent extends Component
 
     private function _setViewVars()
     {
-        $this->_getController()->set($this->_viewVars);
-        $this->_getController()->set('_serialize', array_keys($this->_viewVars));
-        if (isset($this->request->query['_csv_output']) && $this->request->query['_csv_output'] == true) {
+        $controller = $this->getController();
+        $_serialize = $controller->viewBuilder()->getVar('serialize') ?? [];
+        $_serialize = array_merge($_serialize, array_keys($this->_viewVars));
+
+        $controller->set($this->_viewVars);
+        $controller->set('serialize', $_serialize);
+        $csvOutputQuery = $this->getController()->getRequest()->getQuery('_csv_output');
+        if (!empty($csvOutputQuery) && $csvOutputQuery) {
             // In case of CSV download, set csv headers and the fields to be inserted into csv file
-            $this->_getController()->set('_header', $this->getHeader());
-            $this->_getController()->set('_extract', $this->getPaths());
+            $controller->set('header', $this->getHeader());
+            $controller->set('extract', $this->getPaths());
         }
     }
 
@@ -304,21 +320,21 @@ class DataTablesComponent extends Component
                 $condition[$column] = $value;
             }
         }
-        
+
         if ($type === 'or') {
-            $this->config('conditionsOr', $condition); // merges
+            $this->setConfig('conditionsOr', $condition); // merges
             return;
         } else {
             $pieces = explode('.', $column);
             if (count($pieces) > 1) {
                 list($association, $field) = $pieces;
                 if ($this->_tableName == $association) {
-                    $this->config('conditionsAnd', $condition); // merges
+                    $this->setConfig('conditionsAnd', $condition); // merges
                 } else {
-                    $this->config('matching', [$association => $condition]); // merges
+                    $this->setConfig('matching', [$association => $condition]); // merges
                 }
             } else {
-                $this->config('conditionsAnd', $condition); // merges
+                $this->setConfig('conditionsAnd', $condition); // merges
             }
         }
     }
