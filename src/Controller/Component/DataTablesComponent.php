@@ -57,7 +57,7 @@ class DataTablesComponent extends Component
             // -- add limit
             $lengthQuery = $this->getController()->getRequest()->getQuery('length');
             if (isset($lengthQuery) && !empty($lengthQuery)) {
-                $this->setConfig('length', $this->getController()->getRequest()->getQuery('length'));
+                $this->setConfig('length', (int)$this->getController()->getRequest()->getQuery('length'));
             }
 
             // -- add offset
